@@ -103,25 +103,25 @@ public class Node extends ComponentDefinition {
 
     private Handler testHandler = new Handler<TestMessage>() {
         @Override
-        public void handle(TestMessage testMessage) {
-            String q = testMessage.src;
-            if (!p.equalsIgnoreCase(q))
+        public void handle(TestMessage message) {
+            if (!p.equalsIgnoreCase(message.dst))
                 return;
-            if(level >= testMessage.level) {
+            String q = message.src;
+            if(level >= message.level) {
                 replyTest(q);
             }
             else {
-                tests.add(new TestMessageQueuedItem(q, testMessage.fragmentName, testMessage.level));
+                tests.add(new TestMessageQueuedItem(q, message.fragmentName, message.level));
             }
         }
     };
 
     private Handler rejectHandler = new Handler<RejectMessage>() {
         @Override
-        public void handle(RejectMessage rejectMessage) {
-            String q = rejectMessage.src;
-            if (!p.equalsIgnoreCase(q))
+        public void handle(RejectMessage message) {
+            if (!p.equalsIgnoreCase(message.dst))
                 return;
+            String q = message.src;
             edgeStates.put(q, EdgeState.REJECTED);
             findMinimalOutgoing();
         }
@@ -191,11 +191,7 @@ public class Node extends ComponentDefinition {
             String q = message.src;
             if(level > message.level) {
                 sendMessage(new InitiateMessage(p, q, fragmentName, level, nodeState));
-
                 addEdgeToMst(q, edgeWeights.get(q));
-//                edgeStates.put(q, EdgeState.BRANCH);
-
-//                System.out.println("  CONN: NEW BRANCH EDGE FROM " + p + " TO " + q);
             }
             else if (edgeStates.get(q).equals(EdgeState.BRANCH)){
                 sendMessage(new InitiateMessage(p, q, edgeWeights.get(q), level+1, NodeState.FIND));
@@ -223,9 +219,7 @@ public class Node extends ComponentDefinition {
 
             for (ConnectMessageQueuedItem connectRequest: new ArrayList<>(connects)) {
                 if(level > connectRequest.level) {
-//                    edgeStates.put(connectRequest.node, EdgeState.BRANCH);
                     addEdgeToMst(connectRequest.node, edgeWeights.get(connectRequest.node));
-//                    System.out.println("  INIT: NEW BRANCH EDGE FROM " + p + " TO " + q);
                     connects.remove(connectRequest);
                 }
             }
@@ -253,11 +247,8 @@ public class Node extends ComponentDefinition {
         @Override
         public void handle(Start event) {
             String minWeightEdge = getLowestWeightBasicEdge();
-//            System.out.println("Min Weight Edge for " + p + " is " + minWeightEdge);
             nodeState = NodeState.FOUND;
             addEdgeToMst(minWeightEdge, edgeWeights.get(minWeightEdge));
-//            edgeStates.put(minWeightEdge, EdgeState.BRANCH);
-//            System.out.println(" START: NEW BRANCH EDGE FROM " + p + " TO " + minWeightEdge);
             counter = 1;
             parentReport = 0;
 
@@ -283,13 +274,6 @@ public class Node extends ComponentDefinition {
                 }
                 writtenInFile = true;
             }
-//            System.out.println("For Node " + p);
-//            for (Map.Entry entry: edgeStates.entrySet()) {
-//                if(entry.getValue().equals(EdgeState.BRANCH)){
-//                    System.out.print(entry.getKey() + " ");
-//                }
-//            }
-//            System.out.println();
         }
     };
 
@@ -330,11 +314,8 @@ public class Node extends ComponentDefinition {
         }
         else {
             addEdgeToMst(bestEdge, edgeWeights.get(bestEdge));
-//            edgeStates.put(bestEdge, EdgeState.BRANCH);
-//            System.out.println("CHROOT: NEW BRANCH EDGE FROM " + p + " TO " + bestEdge);
-
             sendMessage(new ConnectMessage(p, bestEdge, level));
-            ConnectMessageQueuedItem item = new ConnectMessageQueuedItem(bestEdge, level); //TODO: Name?
+            ConnectMessageQueuedItem item = new ConnectMessageQueuedItem(bestEdge, level);
             if(connects.contains(item)){
                 sendMessage(new InitiateMessage(p, bestEdge, bestWeight, level+1, NodeState.FIND));
                 connects.remove(item);
