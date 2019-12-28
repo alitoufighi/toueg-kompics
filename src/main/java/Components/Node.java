@@ -4,15 +4,7 @@ import Enums.NodeState;
 import Events.*;
 import Ports.EdgePort;
 import se.sics.kompics.*;
-
-import java.io.File;
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Paths;
-import java.nio.file.StandardOpenOption;
 import java.util.*;
-import java.util.stream.Collectors;
 
 class ConnectMessageQueuedItem {
     String node;
@@ -71,85 +63,68 @@ class MinimumSpanningTreeItem {
 public class Node extends ComponentDefinition {
     private static ArrayList<MinimumSpanningTreeItem> mstItems = new ArrayList<>();
     private static boolean writtenInFile = false;
+    private static final int maxDistance = 1000;
 
     private Positive<EdgePort> receivePort = positive(EdgePort.class);
     private Negative<EdgePort> sendPort = negative(EdgePort.class);
 
     private String p;
-    private String parent;
-    private String testEdge;
-    private String bestEdge;
-    private int level;
-    private int counter;
-    private int bestWeight;
-    private int parentReport;
-    private int fragmentName;
-    private NodeState nodeState;
-    private ArrayList<TestMessageQueuedItem> tests = new ArrayList<>();
-    private ArrayList<ConnectMessageQueuedItem> connects = new ArrayList<>();
-    private HashMap<String, Integer> edgeWeights = new HashMap<>();
-    private HashMap<String, EdgeState> edgeStates = new HashMap<>();
+    private HashMap<String, Integer> neighbors;
 
-    private void addToMstListIfNotPresent(MinimumSpanningTreeItem mstItem) {
-        if(!mstItems.contains(mstItem)) {
-            mstItems.add(mstItem);
-        }
-    }
+    private HashMap<String, Integer> distances = new HashMap<>();
+    private boolean isLeaf;
+    private ArrayList<String> leaves = new ArrayList<>();
+    private ArrayList<String> nodes;
+    private int routesReceivedCount;
+    private boolean isRoutingTerminated = false;
+    private int childrenStatusReceivedCount = 0;
+    private String treeParent;
+    private HashMap<String, HashMap<String, Integer>> routingTables = new HashMap<>();
+    private boolean isRoot = false;
+    private HashMap<String, Integer> leavesInSubtree = new HashMap<>();
 
-    private void addEdgeToMst(String q, int weight) {
-        edgeStates.put(q, EdgeState.BRANCH);
-        addToMstListIfNotPresent(new MinimumSpanningTreeItem(p, q, weight));
-    }
 
-    private Handler testHandler = new Handler<TestMessage>() {
+    private Handler childrenStatusResponseHandler = new Handler<ChildrenStatusResponseMessage>() {
         @Override
-        public void handle(TestMessage message) {
+        public void handle(ChildrenStatusResponseMessage message) {
             if (!p.equalsIgnoreCase(message.dst))
                 return;
-            String q = message.src;
-            if(level >= message.level) {
-                replyTest(q);
+            childrenStatusReceivedCount++;
+            leavesInSubtree.put(message.src, message.leafCount);
+
+            if(isRoot && childrenStatusReceivedCount == neighbors.size() ) {
+                for(Map.Entry entry: leavesInSubtree.entrySet()){
+                    System.out.println(entry.getKey() + " has " + entry.getValue() + " leaves in subtree");
+                }
+
+                //start MapReduce
+
+
+
+            }
+            else if(childrenStatusReceivedCount == neighbors.size() - 1) {
+                sendMessage(new ChildrenStatusResponseMessage(p, treeParent, getSum(leavesInSubtree.values())));
+            }
+        }
+    };
+
+    private Handler childrenStatusRequestHandler = new Handler<ChildrenStatusRequestMessage>() {
+        @Override
+        public void handle(ChildrenStatusRequestMessage message) {
+            if (!p.equalsIgnoreCase(message.dst))
+                return;
+            treeParent = message.src;
+            if(isLeaf){
+                sendMessage(new ChildrenStatusResponseMessage(p, treeParent, 1));
             }
             else {
-                tests.add(new TestMessageQueuedItem(q, message.fragmentName, message.level));
-            }
-        }
-    };
+                for(String neighbor: neighbors.keySet()){
+                    if(neighbor.equals(message.src))
+                        continue;
+                    sendMessage(new ChildrenStatusRequestMessage(p, neighbor));
+                }
 
-    private Handler rejectHandler = new Handler<RejectMessage>() {
-        @Override
-        public void handle(RejectMessage message) {
-            if (!p.equalsIgnoreCase(message.dst))
-                return;
-            String q = message.src;
-            edgeStates.put(q, EdgeState.REJECTED);
-            findMinimalOutgoing();
-        }
-    };
-
-    private Handler acceptHandler = new Handler<AcceptMessage>() {
-        @Override
-        public void handle(AcceptMessage message) {
-            if (!p.equalsIgnoreCase(message.dst))
-                return;
-            String q = message.src;
-            testEdge = null;
-            if(edgeWeights.get(q) < bestWeight) {
-                bestEdge = q;
-                bestWeight = edgeWeights.get(q);
             }
-            if(counter == Collections.frequency(edgeStates.values(), EdgeState.BRANCH)){
-                sendReport();
-            }
-        }
-    };
-
-    private Handler changeRootHandler = new Handler<ChangeRootMessage>() {
-        @Override
-        public void handle(ChangeRootMessage message) {
-            if (!p.equalsIgnoreCase(message.dst))
-                return;
-            changeRoot();
         }
     };
 
@@ -159,192 +134,125 @@ public class Node extends ComponentDefinition {
             if (!p.equalsIgnoreCase(message.dst))
                 return;
             String q = message.src;
-            if(!parent.equals(q)) {
-                counter++;
-                if(message.weight < bestWeight) {
-                    bestEdge = q;
-                    bestWeight = message.weight;
-                }
-                if(counter == Collections.frequency(edgeStates.values(), EdgeState.BRANCH)){
-                    sendReport();
-                }
-            }
-            else if (nodeState == NodeState.FIND) {
-                parentReport = message.weight;
-            }
-            else {
-                if (message.weight > bestWeight) {
-                    changeRoot();
-                }
-                else if(message.weight == Integer.MAX_VALUE){
-                    terminate();
-                }
-            }
         }
     };
 
-    private Handler connectHandler = new Handler<ConnectMessage>() {
+    private String findRoot() {
+        HashMap<String, Double> avgDistances = new HashMap<>();
+
+        for(Map.Entry<String, HashMap<String, Integer>> item: routingTables.entrySet()){
+            double nodeAvgDistance = (double)getSum(item.getValue().values()) / nodes.size();
+            avgDistances.put(item.getKey(), nodeAvgDistance);
+        }
+
+        double minDistance = Collections.min(avgDistances.entrySet(), Map.Entry.comparingByValue()).getValue();
+        ArrayList<String> minDistanceNodes = new ArrayList<>();
+        for(Map.Entry<String, Double> entry: avgDistances.entrySet()){
+            if(entry.getValue().equals(minDistance)) {
+                minDistanceNodes.add(entry.getKey());
+            }
+        }
+        minDistanceNodes.sort(String::compareToIgnoreCase);
+        return minDistanceNodes.get(0);
+    }
+
+    private Handler routingTableHandler = new Handler<RoutingTableMessage>() {
         @Override
-        public void handle(ConnectMessage message) {
+        public void handle(RoutingTableMessage message) {
             if (!p.equalsIgnoreCase(message.dst))
                 return;
-            String q = message.src;
-            if(level > message.level) {
-                sendMessage(new InitiateMessage(p, q, fragmentName, level, nodeState));
-                addEdgeToMst(q, edgeWeights.get(q));
+            if(routingTables.containsKey(message.node))
+                return;
+            routingTables.put(message.node, message.routingTable);
+            for(String neighbor: neighbors.keySet()){
+                if(neighbor.equals(message.src)){
+                    continue;
+                }
+                sendMessage(new RoutingTableMessage(p, neighbor, message.node, message.routingTable, message.isLeaf));
+                if(message.isLeaf){
+                    leaves.add(message.node);
+                }
             }
-            else if (edgeStates.get(q).equals(EdgeState.BRANCH)){
-                sendMessage(new InitiateMessage(p, q, edgeWeights.get(q), level+1, NodeState.FIND));
-            }
-            else {
-                connects.add(new ConnectMessageQueuedItem(q, level));
+
+            if(routingTables.size() == nodes.size()) {
+                String root = findRoot();
+
+                if(root.equals(p)) {
+                    isRoot = true;
+                }
+
+                if(isRoot) {
+                    System.out.println("I AM ROOT: " + p);
+                    for(String neighbor: neighbors.keySet()){
+                        sendMessage(new ChildrenStatusRequestMessage(p, neighbor));
+                    }
+                }
             }
         }
     };
 
-    private Handler initiateHandler = new Handler<InitiateMessage>(){
+    private Handler routingHandler = new Handler<RoutingMessage>(){
         @Override
-        public void handle(InitiateMessage message) {
+        public void handle(RoutingMessage message) {
             if (!p.equalsIgnoreCase(message.dst))
                 return;
-            String q = message.src;
-            fragmentName = message.fragmentName;
-            level = message.level;
-            nodeState = message.state;
-            parent = q;
-            bestEdge = null;
-            bestWeight = Integer.MAX_VALUE;
-            counter = 1;
-            parentReport = 0;
-
-            for (ConnectMessageQueuedItem connectRequest: new ArrayList<>(connects)) {
-                if(level > connectRequest.level) {
-                    addEdgeToMst(connectRequest.node, edgeWeights.get(connectRequest.node));
-                    connects.remove(connectRequest);
+            if(isRoutingTerminated) {
+                return;
+            }
+            HashMap<String, Integer> receivedRoutes = new HashMap<>(message.routes);
+            // updating both receivedRoutes and this node's routes
+            for(Map.Entry<String, Integer> routingItem: message.routes.entrySet()) {
+                if(distances.get(routingItem.getKey()) > distances.get(message.src) + routingItem.getValue()) {
+                    distances.replace(routingItem.getKey(), distances.get(message.src) + routingItem.getValue());
+                    receivedRoutes.replace(routingItem.getKey(), distances.get(message.src) + routingItem.getValue());
+                }
+                else {
+                    receivedRoutes.replace(routingItem.getKey(), distances.get(routingItem.getKey()));
                 }
             }
 
-            for (Map.Entry<String, EdgeState> entry: edgeStates.entrySet()) {
-                if(!entry.getKey().equals(q) && entry.getValue().equals(EdgeState.BRANCH)){
-                    sendMessage(new InitiateMessage(p, entry.getKey(), fragmentName, level, nodeState));
-                }
+            // sending updated receivedRoutes to neighbors
+            for(String neighbor: neighbors.keySet()){
+                if(neighbor.equals(message.src))
+                    continue;
+                sendMessage(new RoutingMessage(p, neighbor, message.initializer, receivedRoutes));
             }
 
-            for(TestMessageQueuedItem testRequest: new ArrayList<>(tests)) {
-                if(level >= testRequest.level) {
-                    replyTest(testRequest.node);
-                    tests.remove(testRequest);
+            routesReceivedCount++;
+
+            if(routesReceivedCount == nodes.size()) {
+                isRoutingTerminated = true;
+
+                for(String neighbor: neighbors.keySet()){
+                    sendMessage(new RoutingTableMessage(p, neighbor, p, distances, isLeaf));
                 }
+                routingTables.put(p, distances);
+
+
             }
 
-            if(nodeState == NodeState.FIND) {
-                findMinimalOutgoing();
-            }
         }
     };
+
+    private int getSum(Collection<Integer> c) {
+        return c.stream().mapToInt(Integer::intValue).sum();
+    }
 
     private Handler startHandler = new Handler<Start>() {
         @Override
         public void handle(Start event) {
-            String minWeightEdge = getLowestWeightBasicEdge();
-            nodeState = NodeState.FOUND;
-            addEdgeToMst(minWeightEdge, edgeWeights.get(minWeightEdge));
-            counter = 1;
-            parentReport = 0;
-
-            sendMessage(new ConnectMessage(p, minWeightEdge, 0));
+            for (String neighbor: neighbors.keySet()) {
+                sendMessage(new RoutingMessage(p, neighbor, p, distances));
+            }
         }
     };
 
     private Handler stopHandler = new Handler<Kill>() {
         @Override
         public void handle(Kill event) {
-            if(!writtenInFile) {
-                new File(Paths.get("output.txt").toString()).delete();
-                System.out.println("Printing MST edges to output.txt file...");
-                try{
-                    for (MinimumSpanningTreeItem item: mstItems) {
-                        String line = item.toString();
-                        Files.write(Paths.get("output.txt"),
-                                (line + System.lineSeparator()).getBytes(StandardCharsets.UTF_8),
-                                StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-                    }
-                } catch (IOException e){
-                    System.out.println("Exception occurred.");
-                }
-                writtenInFile = true;
-            }
+
         }
     };
-
-    private void replyTest(String q) {
-        TestMessageQueuedItem testRequest = TestMessageQueuedItem.findByNode(tests, q);
-        if(fragmentName != testRequest.fragmentName) {
-            sendMessage(new AcceptMessage(p, q));
-        }
-        else {
-            edgeStates.put(q, EdgeState.REJECTED);
-            if(!testEdge.equals(q)) {
-                sendMessage(new RejectMessage(p, q));
-            }
-            else {
-                findMinimalOutgoing();
-            }
-        }
-    }
-
-    private void findMinimalOutgoing() {
-        if(edgeStates.containsValue(EdgeState.BASIC)){
-            String q = getLowestWeightBasicEdge();
-            sendMessage(new TestMessage(p, q, fragmentName, level));
-            testEdge = q;
-        }
-        else {
-            testEdge = null;
-        }
-    }
-
-    private void terminate() {
-        System.out.println("TERMINATOR NODE: " + p);
-    }
-
-    private void changeRoot() {
-        if (edgeStates.get(bestEdge).equals(EdgeState.BRANCH)){
-            sendMessage(new ChangeRootMessage(p, bestEdge));
-        }
-        else {
-            addEdgeToMst(bestEdge, edgeWeights.get(bestEdge));
-            sendMessage(new ConnectMessage(p, bestEdge, level));
-            ConnectMessageQueuedItem item = new ConnectMessageQueuedItem(bestEdge, level);
-            if(connects.contains(item)){
-                sendMessage(new InitiateMessage(p, bestEdge, bestWeight, level+1, NodeState.FIND));
-                connects.remove(item);
-            }
-        }
-    }
-
-    private void sendReport() {
-        nodeState = NodeState.FOUND;
-        sendMessage(new ReportMessage(p, parent, bestWeight));
-        if(parentReport > 0 && bestWeight < parentReport) {
-            changeRoot();
-        }
-    }
-
-    private String getLowestWeightBasicEdge() {
-        HashMap<String, EdgeState> basicEdges = edgeStates.entrySet()
-                .stream()
-                .filter(entry -> entry.getValue().equals(EdgeState.BASIC))
-                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue, (prev, next) -> next, HashMap::new));
-
-        HashMap<String, Integer> basicEdgesWithWeight = edgeWeights.entrySet()
-                .stream()
-                .filter(entry -> basicEdges.containsKey(entry.getKey()))
-                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue, (prev, next) -> next, HashMap::new));
-
-        return Collections.min(basicEdgesWithWeight.entrySet(), Map.Entry.comparingByValue()).getKey();
-    }
-
 
     private void sendMessage(KompicsEvent event) {
         trigger(event, sendPort);
@@ -352,20 +260,26 @@ public class Node extends ComponentDefinition {
 
     public Node(InitMessage initMessage) {
         p = initMessage.nodeName;
-        edgeWeights = initMessage.neighbours;
-        nodeState = NodeState.SLEEP;
-        for(String neighbour : edgeWeights.keySet())
-            edgeStates.put(neighbour, EdgeState.BASIC);
+        neighbors = initMessage.neighbors;
+        nodes = initMessage.nodesList;
+        routesReceivedCount = 1;
+        isLeaf = (neighbors.size() == 1);
+
+        for (String node: nodes) {
+            distances.put(node, neighbors.getOrDefault(node, maxDistance));
+        }
+        distances.replace(p, 0);
+
+        if(isLeaf) {
+            leaves.add(p);
+        }
 
         subscribe(startHandler, control);
         subscribe(stopHandler, control);
-        subscribe(reportHandler, receivePort);
-        subscribe(rejectHandler, receivePort);
-        subscribe(acceptHandler, receivePort);
-        subscribe(changeRootHandler, receivePort);
-        subscribe(reportHandler, receivePort);
-        subscribe(connectHandler, receivePort);
-        subscribe(initiateHandler, receivePort);
+        subscribe(routingHandler, receivePort);
+        subscribe(routingTableHandler, receivePort);
+        subscribe(childrenStatusRequestHandler, receivePort);
+        subscribe(childrenStatusResponseHandler, receivePort);
     }
 }
 

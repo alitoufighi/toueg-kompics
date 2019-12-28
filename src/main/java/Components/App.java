@@ -20,7 +20,7 @@ import java.util.Scanner;
 
 public class App extends ComponentDefinition {
 
-    String startNode = "";
+    ArrayList<String> nodes = new ArrayList<>();
     ArrayList<Edge> edges = new ArrayList<>();
     Map<String,Component> components = new HashMap<String,Component>();
 
@@ -43,8 +43,6 @@ public class App extends ComponentDefinition {
     public void readTable(){
         File resourceFile = new File(Paths.get("input.txt").toString());
         try (Scanner scanner = new Scanner(resourceFile)) {
-            int temp = Integer.parseInt(scanner.nextLine());
-
             while(scanner.hasNext()) {
                 String line = scanner.nextLine();
 
@@ -53,6 +51,10 @@ public class App extends ComponentDefinition {
                 String src = rel.split("-")[0];
                 String dst = rel.split("-")[1];
                 edges.add(new Edge(src, dst, weight));
+                if(!nodes.contains(src))
+                    nodes.add(src);
+                if(!nodes.contains(dst))
+                    nodes.add(dst);
             }
         } catch (IOException e) {
             e.printStackTrace();
@@ -64,7 +66,8 @@ public class App extends ComponentDefinition {
                         Node.class,
                         new InitMessage(
                                 edge.src,
-                                findNeighbours(edge.src)
+                                findNeighbours(edge.src),
+                                nodes
                         )
                 );
                 components.put(edge.src, c) ;
@@ -74,7 +77,8 @@ public class App extends ComponentDefinition {
                 Component c = create(
                         Node.class,
                         new InitMessage(edge.dst,
-                                findNeighbours(edge.dst)
+                                findNeighbours(edge.dst),
+                                nodes
                         )
                 );
                 components.put(edge.dst, c) ;
