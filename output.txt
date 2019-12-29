@@ -1,0 +1,4 @@
+khoobi : 1
+chetori : 1
+salam : 3
+bah : 2

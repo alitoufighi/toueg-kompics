@@ -41,7 +41,7 @@ public class App extends ComponentDefinition {
     }
 
     public void readTable(){
-        File resourceFile = new File(Paths.get("input.txt").toString());
+        File resourceFile = new File(Paths.get("input2.txt").toString());
         try (Scanner scanner = new Scanner(resourceFile)) {
             while(scanner.hasNext()) {
                 String line = scanner.nextLine();

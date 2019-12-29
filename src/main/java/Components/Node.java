@@ -4,6 +4,11 @@ import Enums.NodeState;
 import Events.*;
 import Ports.EdgePort;
 import se.sics.kompics.*;
+
+import java.io.*;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 
 class ConnectMessageQueuedItem {
@@ -64,6 +69,7 @@ public class Node extends ComponentDefinition {
     private static ArrayList<MinimumSpanningTreeItem> mstItems = new ArrayList<>();
     private static boolean writtenInFile = false;
     private static final int maxDistance = 1000;
+    private static final String mapReduceFileName = "testmapred.txt"/*"mapreduce.txt"*/;
 
     private Positive<EdgePort> receivePort = positive(EdgePort.class);
     private Negative<EdgePort> sendPort = negative(EdgePort.class);
@@ -82,7 +88,123 @@ public class Node extends ComponentDefinition {
     private HashMap<String, HashMap<String, Integer>> routingTables = new HashMap<>();
     private boolean isRoot = false;
     private HashMap<String, Integer> leavesInSubtree = new HashMap<>();
+    private int reduceMessagesReceivedCount = 0;
+    private HashMap<String, Integer> reducedData = new HashMap<>();
 
+
+    private long getNumberOfCharactersInFile(String filename) {
+//        try {
+//            File f = new File(filename);
+//            FileChannel fChannel = new FileInputStream(f).getChannel();
+//            byte[] barray = new byte[(int) f.length()];
+//            ByteBuffer bb = ByteBuffer.wrap(barray);
+//            fChannel.read(bb);
+//            return new String(barray, StandardCharsets.UTF_8).length();
+//        } catch (IOException e) {
+//            e.printStackTrace();
+//            return -1;
+//        }
+
+        // Assuming there is no multi-byte character in file.
+        try {
+            return new RandomAccessFile(filename, "r").getChannel().size();
+        } catch (IOException e) {
+            e.printStackTrace();
+            return -1;
+        }
+    }
+
+    private Handler ReduceRequestHandler = new Handler<ReduceRequestMessage>() {
+        @Override
+        public void handle(ReduceRequestMessage message) {
+            if (!p.equalsIgnoreCase(message.dst))
+                return;
+
+            reduceMessagesReceivedCount++;
+
+            for(Map.Entry<String, Integer> entry: message.data.entrySet()) {
+                reducedData.put(entry.getKey(),
+                                reducedData.getOrDefault(entry.getKey(), 0) + entry.getValue());
+            }
+
+            if(isRoot) {
+                if(reduceMessagesReceivedCount == neighbors.size()) {
+                    // it is completed
+                    try{
+                        FileWriter fw = new FileWriter("output.txt");
+                        for(Map.Entry<String, Integer> entry: reducedData.entrySet()) {
+                            fw.write(entry.getKey() + " : " + entry.getValue() + System.getProperty("line.separator"));
+                        }
+                        fw.close();
+                    }
+                    catch (IOException e) {
+                        e.printStackTrace();
+                    }
+
+                }
+
+            }
+            else if (reduceMessagesReceivedCount == neighbors.size() - 1) {
+                sendMessage(new ReduceRequestMessage(p, treeParent, reducedData));
+            }
+
+        }
+    };
+
+    private Handler MapRequestHandler = new Handler<MapRequestMessage>() {
+        @Override
+        public void handle(MapRequestMessage message) {
+            if (!p.equalsIgnoreCase(message.dst))
+                return;
+
+            if(isLeaf) {
+
+                HashMap<String, Integer> map =
+                        performMapFunction(message.fileName, message.startPoint, message.endPoint);
+
+                sendMessage(new ReduceRequestMessage(p, treeParent, map));
+
+            }
+            else {
+                int chunkSize = (message.endPoint - message.startPoint) / leaves.size();
+                int i = 0;
+                for(Map.Entry<String, Integer> entry: leavesInSubtree.entrySet()) {
+                    int startPoint = message.startPoint + i * chunkSize;
+                    int endPoint = message.startPoint + (i + entry.getValue()) * chunkSize;
+                    sendMessage(new MapRequestMessage(p, entry.getKey(), mapReduceFileName, startPoint, endPoint));
+                    i += entry.getValue();
+                }
+            }
+
+
+        }
+    };
+
+    private HashMap<String, Integer> performMapFunction(String fileName, int startPoint, int endPoint) {
+        int amountBytesToRead = endPoint - startPoint;
+        System.out.println("Amount bytes to read " + amountBytesToRead);
+        try{
+            FileInputStream fis = new FileInputStream(fileName);
+            ByteBuffer bytes = ByteBuffer.allocateDirect(amountBytesToRead);
+            fis.getChannel().read(bytes, startPoint);
+            fis.close();
+            bytes.rewind();
+            byte[] readBytes = new byte[bytes.remaining()];
+            bytes.get(readBytes);
+            String data = new String(readBytes, StandardCharsets.UTF_8);
+            String[] words = data.trim().split("\\s+");
+
+            HashMap<String, Integer> map = new HashMap<>();
+            for(String word: words) {
+                map.put(word, map.getOrDefault(word, 0) + 1);
+            }
+            return map;
+
+        } catch (IOException e) {
+            e.printStackTrace();
+            return null;
+        }
+    }
 
     private Handler childrenStatusResponseHandler = new Handler<ChildrenStatusResponseMessage>() {
         @Override
@@ -98,7 +220,16 @@ public class Node extends ComponentDefinition {
                 }
 
                 //start MapReduce
-
+                long fileSize = getNumberOfCharactersInFile(mapReduceFileName);
+                System.out.println("Total file size: " + fileSize);
+                int chunkSize = (int)fileSize / leaves.size();
+                int i = 0;
+                for(Map.Entry<String, Integer> entry: leavesInSubtree.entrySet()) {
+                    int startPoint = i * chunkSize;
+                    int endPoint = (i + entry.getValue()) * chunkSize;
+                    sendMessage(new MapRequestMessage(p, entry.getKey(), mapReduceFileName, startPoint, endPoint));
+                    i += entry.getValue();
+                }
 
 
             }
@@ -125,15 +256,6 @@ public class Node extends ComponentDefinition {
                 }
 
             }
-        }
-    };
-
-    private Handler reportHandler = new Handler<ReportMessage>() {
-        @Override
-        public void handle(ReportMessage message) {
-            if (!p.equalsIgnoreCase(message.dst))
-                return;
-            String q = message.src;
         }
     };
 
@@ -280,6 +402,8 @@ public class Node extends ComponentDefinition {
         subscribe(routingTableHandler, receivePort);
         subscribe(childrenStatusRequestHandler, receivePort);
         subscribe(childrenStatusResponseHandler, receivePort);
+        subscribe(MapRequestHandler, receivePort);
+        subscribe(ReduceRequestHandler, receivePort);
     }
 }
 

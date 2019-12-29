@@ -8,9 +8,13 @@ public class EdgePort extends PortType {{
     positive(RoutingTableMessage.class);
     positive(ChildrenStatusRequestMessage.class);
     positive(ChildrenStatusResponseMessage.class);
+    positive(MapRequestMessage.class);
+    positive(ReduceRequestMessage.class);
 
     negative(RoutingMessage.class);
     negative(RoutingTableMessage.class);
     negative(ChildrenStatusRequestMessage.class);
     negative(ChildrenStatusResponseMessage.class);
+    negative(MapRequestMessage.class);
+    negative(ReduceRequestMessage.class);
 }}
